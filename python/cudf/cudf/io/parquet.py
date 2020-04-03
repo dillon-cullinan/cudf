@@ -6,7 +6,7 @@ import pyarrow.parquet as pq
 from pyarrow.compat import guid
 
 import cudf
-import cudf._libxx.parquet as libparquet
+import cudf._lib.parquet as libparquet
 from cudf.utils import ioutils
 
 
@@ -126,6 +126,7 @@ def read_parquet(
     engine="cudf",
     columns=None,
     row_group=None,
+    row_group_count=None,
     skip_rows=None,
     num_rows=None,
     strings_to_categorical=False,
@@ -139,26 +140,25 @@ def read_parquet(
         filepath_or_buffer, None, **kwargs
     )
     if compression is not None:
-        ValueError("URL content-encoding decompression is not supported")
+        raise ValueError("URL content-encoding decompression is not supported")
 
     if engine == "cudf":
-        df = libparquet.read_parquet(
+        return libparquet.read_parquet(
             filepath_or_buffer,
-            columns,
-            row_group,
-            skip_rows,
-            num_rows,
-            strings_to_categorical,
-            use_pandas_metadata,
+            columns=columns,
+            row_group=row_group,
+            row_group_count=row_group_count,
+            skip_rows=skip_rows,
+            num_rows=num_rows,
+            strings_to_categorical=strings_to_categorical,
+            use_pandas_metadata=use_pandas_metadata,
         )
     else:
         warnings.warn("Using CPU via PyArrow to read Parquet dataset.")
         pa_table = pq.read_pandas(
             filepath_or_buffer, columns=columns, *args, **kwargs
         )
-        df = cudf.DataFrame.from_arrow(pa_table)
-
-    return df
+        return cudf.DataFrame.from_arrow(pa_table)
 
 
 @ioutils.doc_to_parquet()
@@ -170,6 +170,7 @@ def to_parquet(
     index=None,
     partition_cols=None,
     statistics="ROWGROUP",
+    metadata_file_path=None,
     *args,
     **kwargs,
 ):
@@ -195,7 +196,12 @@ def to_parquet(
                 )
 
         return libparquet.write_parquet(
-            df, path, index, compression=compression, statistics=statistics
+            df,
+            path,
+            index,
+            compression=compression,
+            statistics=statistics,
+            metadata_file_path=metadata_file_path,
         )
     else:
 
@@ -207,3 +213,10 @@ def to_parquet(
         pq.write_to_dataset(
             pa_table, path, partition_cols=partition_cols, *args, **kwargs
         )
+
+
+@ioutils.doc_merge_parquet_filemetadata()
+def merge_parquet_filemetadata(filemetadata_list):
+    """{docstring}"""
+
+    return libparquet.merge_filemetadata(filemetadata_list)

@@ -4,11 +4,9 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 
-import cudf
 import cudf._lib as libcudf
-import cudf._libxx as libcudfxx
 from cudf.core.buffer import Buffer
-from cudf.core.column import as_column, column
+from cudf.core.column import column
 from cudf.utils import utils
 from cudf.utils.dtypes import is_scalar, np_to_pa_dtype
 
@@ -54,47 +52,6 @@ class DatetimeColumn(column.ColumnBase):
             return False
         return item.astype("int_") in self.as_numerical
 
-    @classmethod
-    def from_numpy(cls, array):
-        cast_dtype = array.dtype.type == np.int64
-        if array.dtype.kind == "M":
-            time_unit, _ = np.datetime_data(array.dtype)
-            cast_dtype = time_unit in ("D", "W", "M", "Y") or (
-                len(array) > 0
-                and (
-                    isinstance(array[0], str)
-                    or isinstance(array[0], dt.datetime)
-                )
-            )
-        elif not cast_dtype:
-            raise ValueError(
-                ("Cannot infer datetime dtype " + "from np.array dtype `%s`")
-                % (array.dtype)
-            )
-
-        if cast_dtype:
-            array = array.astype(np.dtype("datetime64[s]"))
-        assert array.dtype.itemsize == 8
-
-        mask = None
-        if np.any(np.isnat(array)):
-            null = cudf.core.column.column_empty_like(
-                array, masked=True, newsize=1
-            )
-            col = libcudfxx.replace.replace(
-                as_column(Buffer(array), dtype=array.dtype),
-                as_column(
-                    Buffer(
-                        np.array([np.datetime64("NaT")], dtype=array.dtype)
-                    ),
-                    dtype=array.dtype,
-                ),
-                null,
-            )
-            mask = col.mask
-
-        return cls(data=Buffer(array), mask=mask, dtype=array.dtype)
-
     @property
     def time_unit(self):
         return self._time_unit
@@ -128,9 +85,7 @@ class DatetimeColumn(column.ColumnBase):
         return self.get_dt_field("weekday")
 
     def get_dt_field(self, field):
-        out = column.column_empty_like_same_mask(self, dtype=np.int16)
-        libcudf.unaryops.apply_dt_extract_op(self, out, field)
-        return out
+        return libcudf.datetime.extract_datetime_component(self, field)
 
     def normalize_binop_value(self, other):
         if isinstance(other, dt.datetime):
@@ -167,7 +122,7 @@ class DatetimeColumn(column.ColumnBase):
         dtype = np.dtype(dtype)
         if dtype == self.dtype:
             return self
-        return libcudfxx.unary.cast(self, dtype=dtype)
+        return libcudf.unary.cast(self, dtype=dtype)
 
     def as_numerical_column(self, dtype, **kwargs):
         return self.as_numerical.astype(dtype)
@@ -181,14 +136,6 @@ class DatetimeColumn(column.ColumnBase):
             ](self, **kwargs)
         else:
             return column.column_empty(0, dtype="object", masked=False)
-
-    def unordered_compare(self, cmpop, rhs):
-        lhs, rhs = self, rhs
-        return binop(lhs, rhs, op=cmpop, out_dtype=np.bool)
-
-    def ordered_compare(self, cmpop, rhs):
-        lhs, rhs = self, rhs
-        return binop(lhs, rhs, op=cmpop, out_dtype=np.bool)
 
     def to_pandas(self, index=None):
         return pd.Series(
@@ -219,13 +166,25 @@ class DatetimeColumn(column.ColumnBase):
                 "datetime column of {} has no NaN value".format(self.dtype)
             )
 
+    def binary_operator(self, op, rhs, reflect=False):
+        lhs, rhs = self, rhs
+
+        if op in ("eq", "ne", "lt", "gt", "le", "ge"):
+            out_dtype = np.bool
+        else:
+            raise TypeError(
+                f"Series of dtype {self.dtype} cannot perform "
+                f" the operation {op}"
+            )
+        return binop(lhs, rhs, op=op, out_dtype=out_dtype)
+
     def fillna(self, fill_value):
         if is_scalar(fill_value):
             fill_value = np.datetime64(fill_value, self.time_unit)
         else:
             fill_value = column.as_column(fill_value, nan_as_null=False)
 
-        result = libcudfxx.replace.replace_nulls(self, fill_value)
+        result = libcudf.replace.replace_nulls(self, fill_value)
         result = column.build_column(
             result.base_data,
             result.dtype,
@@ -264,9 +223,7 @@ class DatetimeColumn(column.ColumnBase):
 
 
 def binop(lhs, rhs, op, out_dtype):
-    libcudf.nvtx.nvtx_range_push("CUDF_BINARY_OP", "orange")
-    masked = lhs.nullable or rhs.nullable
-    out = column.column_empty_like(lhs, dtype=out_dtype, masked=masked)
-    _ = libcudf.binops.apply_op(lhs, rhs, out, op)
-    libcudf.nvtx.nvtx_range_pop()
+    libcudf.nvtx.range_push("CUDF_BINARY_OP", "orange")
+    out = libcudf.binaryop.binaryop(lhs, rhs, op, out_dtype)
+    libcudf.nvtx.range_pop()
     return out

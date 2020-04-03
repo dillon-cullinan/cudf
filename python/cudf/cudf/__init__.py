@@ -1,4 +1,8 @@
-# Copyright (c) 2018-2019, NVIDIA CORPORATION.
+# Copyright (c) 2018-2020, NVIDIA CORPORATION.
+
+from cudf.utils.gpu_utils import validate_setup  # isort:skip
+
+validate_setup()
 
 import cupy
 
@@ -8,6 +12,7 @@ from cudf import core, datasets
 from cudf._version import get_versions
 from cudf.core import DataFrame, Index, MultiIndex, Series, from_pandas, merge
 from cudf.core.dtypes import CategoricalDtype
+from cudf.core.groupby import Grouper
 from cudf.core.ops import (
     arccos,
     arcsin,

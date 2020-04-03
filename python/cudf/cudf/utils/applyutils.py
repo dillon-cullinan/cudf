@@ -116,8 +116,8 @@ def make_aggregate_nullmask(df, columns=None, op="and"):
             )
             continue
 
-        libcudf.binops.apply_op(
-            column.as_column(nullmask), out_mask, out_mask, op
+        out_mask = libcudf.binaryop.binaryop(
+            column.as_column(nullmask), out_mask, op, out_mask.dtype
         )
 
     return out_mask
@@ -167,7 +167,7 @@ class ApplyKernelCompilerBase(object):
         # Prepare output frame
         outdf = df.copy()
         for k in sorted(self.outcols):
-            outdf[k] = Series(outputs[k], nan_as_null=False)
+            outdf[k] = Series(outputs[k], index=outdf.index, nan_as_null=False)
             if out_mask is not None:
                 outdf[k] = outdf[k].set_mask(out_mask.data_array_view)
 

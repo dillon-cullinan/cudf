@@ -17,7 +17,9 @@
 #include <cudf/aggregation.hpp>
 #include <cudf/binaryop.hpp>
 #include <cudf/column/column_factories.hpp>
+#include <cudf/scalar/scalar_factories.hpp>
 #include <cudf/datetime.hpp>
+#include <cudf/concatenate.hpp>
 #include <cudf/filling.hpp>
 #include <cudf/quantiles.hpp>
 #include <cudf/reduction.hpp>
@@ -28,7 +30,9 @@
 #include <cudf/strings/case.hpp>
 #include <cudf/strings/convert/convert_datetime.hpp>
 #include <cudf/strings/combine.hpp>
+#include <cudf/strings/contains.hpp>
 #include <cudf/strings/find.hpp>
+#include <cudf/strings/replace.hpp>
 #include <cudf/strings/substring.hpp>
 #include <cudf/transform.hpp>
 #include <cudf/unary.hpp>
@@ -83,6 +87,23 @@ JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_ColumnVector_concatenate(JNIEnv *env
     }
     std::unique_ptr<column> result = cudf::concatenate(columns_vector);
     return reinterpret_cast<jlong>(result.release());
+  }
+  CATCH_STD(env, 0);
+}
+
+JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_ColumnVector_sequence(JNIEnv *env, jclass,
+    jlong j_initial_val, jlong j_step, jint row_count) {
+  JNI_NULL_CHECK(env, j_initial_val, "scalar is null", 0);
+  try {
+    auto initial_val = reinterpret_cast<cudf::scalar const*>(j_initial_val);
+    auto step = reinterpret_cast<cudf::scalar const*>(j_step);
+    std::unique_ptr<cudf::column> col;
+    if (step) {
+      col = cudf::experimental::sequence(row_count, *initial_val, *step);
+    } else {
+      col = cudf::experimental::sequence(row_count, *initial_val);
+    }
+    return reinterpret_cast<jlong>(col.release());
   }
   CATCH_STD(env, 0);
 }
@@ -206,14 +227,16 @@ JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_ColumnVector_reduce(JNIEnv *env, jcl
 JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_ColumnVector_quantile(JNIEnv *env, jclass clazz,
                                                                          jlong input_column,
                                                                          jint quantile_method,
-                                                                         jdouble quantile) {
+                                                                         jdoubleArray jquantiles) {
   JNI_NULL_CHECK(env, input_column, "native handle is null", 0);
   try {
+    cudf::jni::native_jdoubleArray native_quantiles(env, jquantiles);
+    std::vector<double> quantiles(native_quantiles.data(), native_quantiles.data() + native_quantiles.size()); 
     cudf::column_view *n_input_column = reinterpret_cast<cudf::column_view *>(input_column);
     cudf::experimental::interpolation n_quantile_method =
         static_cast<cudf::experimental::interpolation>(quantile_method);
-    std::unique_ptr<cudf::scalar> result =
-        cudf::experimental::quantile(*n_input_column, quantile, n_quantile_method);
+    std::unique_ptr<cudf::column> result =
+        cudf::experimental::quantile(*n_input_column, quantiles, n_quantile_method);
     return reinterpret_cast<jlong>(result.release());
   }
   CATCH_STD(env, 0);
@@ -648,6 +671,38 @@ JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_ColumnVector_stringContains(JNIEnv *
   CATCH_STD(env, 0);
 }
 
+JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_ColumnVector_matchesRe(JNIEnv *env, jobject j_object,
+                                                                    jlong j_view_handle, jstring patternObj) {
+    JNI_NULL_CHECK(env, j_view_handle, "column is null", false);
+    JNI_NULL_CHECK(env, patternObj, "pattern is null", false);
+
+  try {
+    cudf::column_view* column_view = reinterpret_cast<cudf::column_view*>(j_view_handle);
+    cudf::strings_column_view strings_column(*column_view);
+    cudf::jni::native_jstring pattern(env, patternObj);
+
+    std::unique_ptr<cudf::column> result = cudf::strings::matches_re(strings_column, pattern.get());
+    return reinterpret_cast<jlong>(result.release());
+  }
+  CATCH_STD(env, 0);
+}
+
+JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_ColumnVector_containsRe(JNIEnv *env, jobject j_object,
+                                                                    jlong j_view_handle, jstring patternObj) {
+    JNI_NULL_CHECK(env, j_view_handle, "column is null", false);
+    JNI_NULL_CHECK(env, patternObj, "pattern is null", false);
+
+  try {
+    cudf::column_view* column_view = reinterpret_cast<cudf::column_view*>(j_view_handle);
+    cudf::strings_column_view strings_column(*column_view);
+    cudf::jni::native_jstring pattern(env, patternObj);
+
+    std::unique_ptr<cudf::column> result = cudf::strings::contains_re(strings_column, pattern.get());
+    return reinterpret_cast<jlong>(result.release());
+  }
+  CATCH_STD(env, 0);
+}
+
 JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_ColumnVector_stringConcatenation(JNIEnv *env, jobject j_object,
                                                                   jlongArray column_handles, jlong separator,
                                                                   jlong narep) {
@@ -745,6 +800,37 @@ JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_ColumnVector_substringLocate(JNIEnv 
     return reinterpret_cast<jlong>(result.release());
   }
   CATCH_STD(env, 0);
+}
+
+JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_ColumnVector_stringReplace(JNIEnv *env, jclass, jlong column_view,
+                                                                    jlong target, jlong replace) {
+  JNI_NULL_CHECK(env, column_view, "column is null", 0);
+  JNI_NULL_CHECK(env, target, "target string scalar is null", 0);
+  JNI_NULL_CHECK(env, replace, "replace string scalar is null", 0);
+  try {
+    cudf::column_view* cv = reinterpret_cast<cudf::column_view*>(column_view);
+    cudf::strings_column_view scv(*cv);
+    cudf::string_scalar* ss_target = reinterpret_cast<cudf::string_scalar*>(target);
+    cudf::string_scalar* ss_replace = reinterpret_cast<cudf::string_scalar*>(replace);
+
+    std::unique_ptr<cudf::column> result = cudf::strings::replace(scv, *ss_target, *ss_replace);
+    return reinterpret_cast<jlong>(result.release());
+  }
+  CATCH_STD(env, 0);
+}
+
+JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_ColumnVector_normalizeNANsAndZeros(JNIEnv *env,
+                                                                                jclass clazz,
+                                                                                jlong input_column) {
+    using cudf::column_view;
+
+    JNI_NULL_CHECK(env, input_column, "Input column is null", 0);
+    try {
+       return reinterpret_cast<jlong>(
+         cudf::normalize_nans_and_zeros(*reinterpret_cast<column_view*>(input_column)).release()
+       );
+    }
+    CATCH_STD(env, 0);
 }
 
 ////////
@@ -1063,6 +1149,30 @@ JNIEXPORT jint JNICALL Java_ai_rapids_cudf_ColumnVector_getNativeNullCountColumn
     return static_cast<jint>(column->null_count());
   }
   CATCH_STD(env, 0);
+}
+
+JNIEXPORT jlong JNICALL Java_ai_rapids_cudf_ColumnVector_clamper(JNIEnv *env, jobject j_object, jlong handle,
+                                                            jlong j_lo_scalar, jlong j_lo_replace_scalar,
+                                                            jlong j_hi_scalar, jlong j_hi_replace_scalar) {
+
+    JNI_NULL_CHECK(env, handle, "native view handle is null", 0)
+    JNI_NULL_CHECK(env, j_lo_scalar, "lo scalar is null", 0)
+    JNI_NULL_CHECK(env, j_lo_replace_scalar, "lo scalar replace value is null", 0)
+    JNI_NULL_CHECK(env, j_hi_scalar, "lo scalar is null", 0)
+    JNI_NULL_CHECK(env, j_hi_replace_scalar, "lo scalar replace value is null", 0)
+    using cudf::experimental::clamp;
+    try {
+      cudf::column_view *column_view = reinterpret_cast<cudf::column_view *>(handle);
+      cudf::scalar *lo_scalar = reinterpret_cast<cudf::scalar *>(j_lo_scalar);
+      cudf::scalar *lo_replace_scalar = reinterpret_cast<cudf::scalar *>(j_lo_replace_scalar);
+      cudf::scalar *hi_scalar = reinterpret_cast<cudf::scalar *>(j_hi_scalar);
+      cudf::scalar *hi_replace_scalar = reinterpret_cast<cudf::scalar *>(j_hi_replace_scalar);
+
+      std::unique_ptr<cudf::column> result = clamp(*column_view, *lo_scalar, *lo_replace_scalar, *hi_scalar, *hi_replace_scalar);
+
+     return reinterpret_cast<jlong>(result.release());
+    }
+    CATCH_STD(env, 0);
 }
 
 } // extern "C"

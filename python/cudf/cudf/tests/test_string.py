@@ -59,11 +59,11 @@ def ps_gs(data, index):
 @pytest.mark.parametrize("nbytes", [0, 2 ** 10, 2 ** 31 - 1, 2 ** 31, 2 ** 32])
 @patch.object(nvstrings.nvstrings, "byte_count")
 def test_from_nvstrings_nbytes(mock_byte_count, nbytes):
-    import cudf._libxx as libcudfxx
+    import cudf._lib as libcudf
 
     mock_byte_count.return_value = nbytes
     expectation = raise_builder(
-        [nbytes > libcudfxx.MAX_STRING_COLUMN_BYTES], MemoryError
+        [nbytes > libcudf.MAX_STRING_COLUMN_BYTES], MemoryError
     )
     with expectation:
         Series(nvstrings.to_device([""]))
@@ -469,11 +469,8 @@ def test_string_extract(ps_gs, pat, expand, flags, flags_raise):
         ("a", False),
         ("a", True),
         ("f", False),
-        # TODO, PREM: Analyse and uncomment the
-        # two tests as they seem to pass when run
-        # as independent test but seem to fail as a group test.
-        # (r"[a-z]", True),
-        # (r"[A-Z]", True),
+        (r"[a-z]", True),
+        (r"[A-Z]", True),
         ("hello", False),
         ("FGHI", False),
     ],
@@ -537,8 +534,7 @@ def test_string_upper(ps_gs):
         ["a b", " c ", "   d", "e   ", "f"],
         ["a-b", "-c-", "---d", "e---", "f"],
         ["ab", "c", "d", "e", "f"],
-        # TODO, PREM: Uncomment in future PR
-        # [None, None, None, None, None],
+        [None, None, None, None, None],
     ],
 )
 @pytest.mark.parametrize("pat", [None, " ", "-"])
@@ -982,12 +978,16 @@ def test_string_no_children_properties():
         ["abcdefghij", "0123456789", "9876543210", None, "accénted", ""],
     ],
 )
-@pytest.mark.parametrize("index", [0, 1, 2, 3, 9, 10])
+@pytest.mark.parametrize(
+    "index", [-100, -5, -2, -6, -1, 0, 1, 2, 3, 9, 10, 100]
+)
 def test_string_get(string, index):
     pds = pd.Series(string)
     gds = Series(string)
 
-    assert_eq(pds.str.get(index).fillna(""), gds.str.get(index).fillna(""))
+    assert_eq(
+        pds.str.get(index).fillna(""), gds.str.get(index).fillna(""),
+    )
 
 
 @pytest.mark.parametrize(
@@ -1105,11 +1105,21 @@ _string_char_types_data = [
     [" ", "\t\r\n ", ""],
     ["leopard", "Golden Eagle", "SNAKE", ""],
     [r"¯\_(ツ)_/¯", "(╯°□°)╯︵ ┻━┻", "┬─┬ノ( º _ ºノ)"],
+    ["a1", "A1", "a!", "A!", "!1", "aA"],
 ]
 
 
 @pytest.mark.parametrize(
-    "type_op", ["isdecimal", "isalnum", "isalpha", "isdigit", "isnumeric"]
+    "type_op",
+    [
+        "isdecimal",
+        "isalnum",
+        "isalpha",
+        "isdigit",
+        "isnumeric",
+        "isupper",
+        "islower",
+    ],
 )
 @pytest.mark.parametrize("data", _string_char_types_data)
 def test_string_char_types(type_op, data):
@@ -1117,19 +1127,6 @@ def test_string_char_types(type_op, data):
     ps = pd.Series(data)
 
     assert_eq(getattr(gs.str, type_op)(), getattr(ps.str, type_op)())
-
-
-@pytest.mark.xfail(reason="unresolved libcudf/pandas incompatibility")
-@pytest.mark.parametrize("data", _string_char_types_data)
-@pytest.mark.parametrize("case_check_op", ["isupper", "islower"])
-def test_string_char_case_check(data, case_check_op):
-    gs = Series(data)
-    ps = pd.Series(data)
-
-    # some tests may pass, but for the wrong reasons.
-    assert_eq(
-        getattr(gs.str, case_check_op)(), getattr(ps.str, case_check_op)()
-    )
 
 
 @pytest.mark.parametrize(
@@ -1226,11 +1223,11 @@ def test_strings_rsplit(data, n, expand):
     gs = Series(data)
     ps = pd.Series(data)
 
-    # TODO: Uncomment this test once
-    # this is fixed: https://github.com/rapidsai/cudf/issues/4357
-    # assert_eq(
-    #     ps.str.rsplit(n=n, expand=expand), gs.str.rsplit(n=n, expand=expand)
-    # )
+    pd.testing.assert_frame_equal(
+        ps.str.rsplit(n=n, expand=expand).reset_index(),
+        gs.str.rsplit(n=n, expand=expand).to_pandas().reset_index(),
+        check_index_type=False,
+    )
     assert_eq(
         ps.str.rsplit(",", n=n, expand=expand),
         gs.str.rsplit(",", n=n, expand=expand),
@@ -1332,13 +1329,10 @@ def test_strings_filling_tests(data, width, fillchar):
     gs = Series(data)
     ps = pd.Series(data)
 
-    # TODO: uncomment .str.center tests once this
-    # is fixed: https://github.com/rapidsai/cudf/issues/4354
-    # as .str.center is nothing but .str.pad(side="both")
-    # assert_eq(
-    #     ps.str.center(width=width, fillchar=fillchar),
-    #     gs.str.center(width=width, fillchar=fillchar),
-    # )
+    assert_eq(
+        ps.str.center(width=width, fillchar=fillchar),
+        gs.str.center(width=width, fillchar=fillchar),
+    )
     assert_eq(
         ps.str.ljust(width=width, fillchar=fillchar),
         gs.str.ljust(width=width, fillchar=fillchar),
@@ -1381,14 +1375,7 @@ def test_strings_zfill_tests(data, width):
 )
 @pytest.mark.parametrize("width", [0, 1, 4, 9, 100])
 @pytest.mark.parametrize(
-    "side",
-    [
-        "left",
-        "right",
-        # TODO: Uncomment "both" once
-        # https://github.com/rapidsai/cudf/issues/4354 is fixed.
-        #  "both"
-    ],
+    "side", ["left", "right", "both"],
 )
 @pytest.mark.parametrize("fillchar", [" ", ".", "\n", "+", "\t"])
 def test_strings_pad_tests(data, width, side, fillchar):
@@ -1483,8 +1470,6 @@ def test_string_replace_multi():
     assert_eq(expect, got)
 
 
-# TODO, PREM: Uncomment this following tests after
-# this is fixed: https://github.com/rapidsai/cudf/issues/4380
 @pytest.mark.parametrize(
     "find",
     [
@@ -1492,22 +1477,15 @@ def test_string_replace_multi():
         "(\\d)(\\d)",
         "(\\d)(\\d)",
         "(\\d)(\\d)",
-        # "([a-z])-([a-z])",
+        "([a-z])-([a-z])",
         "([a-z])-([a-zé])",
         "([a-z])-([a-z])",
-        # "([a-z])-([a-zé])",
+        "([a-z])-([a-zé])",
     ],
 )
 @pytest.mark.parametrize(
     "replace",
-    [
-        "\\1-\\2",
-        "V\\2-\\1",
-        "\\1 \\2",
-        "\\2 \\1",
-        # "X\\1+\\2Z",
-        #  "X\\1+\\2Z"
-    ],
+    ["\\1-\\2", "V\\2-\\1", "\\1 \\2", "\\2 \\1", "X\\1+\\2Z", "X\\1+\\2Z"],
 )
 def test_string_replace_with_backrefs(find, replace):
     s = [
@@ -1517,7 +1495,7 @@ def test_string_replace_with_backrefs(find, replace):
         None,
         "tést-string",
         "two-thréé four-fivé",
-        # "abcd-éfgh",
+        "abcd-éfgh",
         "tést-string-again",
     ]
     ps = pd.Series(s)
@@ -1552,25 +1530,16 @@ def test_string_table_view_creation():
     ],
 )
 @pytest.mark.parametrize(
-    "pat",
-    [
-        # TODO, PREM: Uncomment after this issue is fixed
-        # '',
-        # None,
-        " ",
-        "a",
-        "abc",
-        "cat",
-        "$",
-        "\n",
-    ],
+    "pat", ["", None, " ", "a", "abc", "cat", "$", "\n"],
 )
 def test_string_starts_ends(data, pat):
     ps = pd.Series(data)
     gs = Series(data)
 
-    assert_eq(ps.str.startswith(pat), gs.str.startswith(pat))
-    assert_eq(ps.str.endswith(pat), gs.str.endswith(pat))
+    assert_eq(
+        ps.str.startswith(pat), gs.str.startswith(pat), check_dtype=False
+    )
+    assert_eq(ps.str.endswith(pat), gs.str.endswith(pat), check_dtype=False)
 
 
 @pytest.mark.parametrize(
@@ -1587,18 +1556,7 @@ def test_string_starts_ends(data, pat):
     ],
 )
 @pytest.mark.parametrize(
-    "sub",
-    [
-        # TODO, PREM: Uncomment after this issue is fixed
-        # '',
-        # None,
-        " ",
-        "a",
-        "abc",
-        "cat",
-        "$",
-        "\n",
-    ],
+    "sub", ["", " ", "a", "abc", "cat", "$", "\n"],
 )
 def test_string_find(data, sub):
     ps = pd.Series(data)
@@ -1655,6 +1613,7 @@ def test_string_find(data, sub):
             "+",
             ValueError,
         ),
+        (["line to be wrapped", "another line to be wrapped"], "", None),
     ],
 )
 def test_string_str_index(data, sub, er):
@@ -1693,6 +1652,7 @@ def test_string_str_index(data, sub, er):
             "+",
             ValueError,
         ),
+        (["line to be wrapped", "another line to be wrapped"], "", None),
     ],
 )
 def test_string_str_rindex(data, sub, er):
@@ -1703,14 +1663,14 @@ def test_string_str_rindex(data, sub, er):
         assert_eq(ps.str.rindex(sub), gs.str.rindex(sub), check_dtype=False)
 
     try:
-        ps.str.index(sub)
+        ps.str.rindex(sub)
     except er:
         pass
     else:
         assert not er
 
     try:
-        gs.str.index(sub)
+        gs.str.rindex(sub)
     except er:
         pass
     else:

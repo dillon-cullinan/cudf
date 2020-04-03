@@ -12,6 +12,7 @@ import pyarrow as pa
 import pytest
 
 import cudf
+from cudf.io.parquet import merge_parquet_filemetadata
 from cudf.tests.utils import assert_eq
 
 
@@ -469,6 +470,34 @@ def test_multifile_warning(datadir):
         assert_eq(expect, got)
 
 
+# Validates the metadata return path of the parquet writer
+def test_parquet_writer_return_metadata(tmpdir, simple_gdf):
+    gdf_fname = tmpdir.join("data1.parquet")
+
+    # Write out the gdf using the GPU accelerated writer
+    df_metadata = simple_gdf.to_parquet(
+        gdf_fname.strpath, index=None, metadata_file_path="test/data1.parquet"
+    )
+    # Verify that we got a valid parquet signature in the initial metadata blob
+    assert df_metadata.tobytes()[0:4] == b"PAR1"
+
+    df_metadata_list1 = [df_metadata]
+    df_metadata_list2 = [df_metadata, df_metadata]
+    merged_metadata1 = merge_parquet_filemetadata(df_metadata_list1)
+    merged_metadata2 = merge_parquet_filemetadata(df_metadata_list2)
+
+    # Verify that we got a valid parquet signature in the final metadata blob
+    assert merged_metadata1.tobytes()[0:4] == b"PAR1"
+    assert merged_metadata2.tobytes()[0:4] == b"PAR1"
+
+    # Make sure aggregation is combining metadata correctly
+    fmd1 = pa.parquet.ParquetFile(BytesIO(merged_metadata1.tobytes())).metadata
+    fmd2 = pa.parquet.ParquetFile(BytesIO(merged_metadata2.tobytes())).metadata
+    assert fmd2.num_columns == fmd1.num_columns
+    assert fmd2.num_rows == 2 * fmd1.num_rows
+    assert fmd2.num_row_groups == 2 * fmd1.num_row_groups
+
+
 # Validates the integrity of the GPU accelerated parquet writer.
 def test_parquet_writer_gpu_none_index(tmpdir, simple_pdf, simple_gdf):
     gdf_fname = tmpdir.join("gdf.parquet")
@@ -600,3 +629,13 @@ def test_parquet_write_to_dataset(tmpdir_factory, cols):
     expect = pd.read_parquet(dir1)
     got = pd.read_parquet(dir2)
     assert_eq(expect, got)
+
+    gdf = cudf.DataFrame(
+        {
+            "a": cudf.Series([1, 2, 3]),
+            "b": cudf.Series([1, 2, 3]),
+            "c": cudf.Series(["a", "b", "c"], dtype="category"),
+        }
+    )
+    with pytest.raises(ValueError):
+        gdf.to_parquet(dir1, partition_cols=cols)
